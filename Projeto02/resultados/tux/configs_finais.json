@@ -1,0 +1,45 @@
+{
+  "SOM": {
+    "4": {
+      "alpha0": 0.9,
+      "sigma0": 1.0,
+      "sigma_f": 0.3,
+      "iterations": 50000
+    },
+    "8": {
+      "alpha0": 0.3,
+      "sigma0": 4.0,
+      "sigma_f": 0.3,
+      "iterations": 200000
+    },
+    "16": {
+      "alpha0": 0.1,
+      "sigma0": 8.0,
+      "sigma_f": 0.3,
+      "iterations": 200000
+    }
+  },
+  "GNG": {
+    "16": {
+      "eps_b": 0.05,
+      "eps_n": 0.002,
+      "age_max": 100,
+      "lam": 50,
+      "tune_iterations": 100000
+    },
+    "64": {
+      "eps_b": 0.2,
+      "eps_n": 0.006,
+      "age_max": 100,
+      "lam": 100,
+      "tune_iterations": 100000
+    },
+    "256": {
+      "eps_b": 0.2,
+      "eps_n": 0.006,
+      "age_max": 50,
+      "lam": 50,
+      "tune_iterations": 100000
+    }
+  }
+}
