@@ -1,0 +1,338 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[brazilian]{babel}
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{tabularx}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.2ex plus 0.5ex minus .2ex}{0.6ex}
+\titlespacing*{\subsection}{0pt}{1.0ex plus 0.4ex minus .2ex}{0.4ex}
+
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE \textbf{Projeto 3: Autoencoder Variacional (VAE) em Fashion-MNIST}} \\[0.35em]
+    {\large Disciplina: Introdução às Redes Neurais Artificiais} \\[0.3em]
+    \textbf{Autor(es):} Thiago Roberto Fernandes Rocha (RA: 149.641) \\[0.2em]
+    \textbf{Repositório / Código Reprodutível:} \url{https://github.com/ThiagoRberto/redes_neurais}
+\end{center}
+\vspace{-0.5em}
+\hrule
+\vspace{0.8em}
+
+\section{Configuração Experimental e Reprodutibilidade}
+
+\subsection{Dados, Extração e Pré-processamento}
+Foi utilizado o conjunto Fashion-MNIST: imagens em tons de cinza de $28\times28$ pixels de dez classes de vestuário (camiseta, calça, pulôver, vestido, casaco, sandália, camisa, tênis, bolsa e bota). Cada imagem é achatada em um vetor $\mathbf{x}\in[0,1]^{784}$, dividindo-se os níveis de cinza por 255. Os 60\,000 exemplos de treino oficiais foram divididos, de forma estratificada e com semente 42, em 50\,000 para treino e 10\,000 para validação; os 10\,000 exemplos do conjunto de teste oficial foram usados apenas na avaliação final (Tabela~\ref{tab:dados}).
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Partição dos dados. Todos os conjuntos são balanceados entre as classes.}
+\label{tab:dados}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Conjunto} & \textbf{Imagens} & \textbf{Por classe} \\
+\midrule
+Treino & 50\,000 & 5\,000 \\
+Validação (seleção de hiperparâmetros e early stopping) & 10\,000 & 1\,000 \\
+Teste (avaliação final e análise do espaço latente) & 10\,000 & 1\,000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Modelo}
+O VAE foi implementado em PyTorch (arquivo \texttt{vae.py}) com codificador e decodificador do tipo MLP. O codificador aplica camadas densas com ativação aos 784 pixels e termina em duas camadas lineares paralelas, que produzem a média $\boldsymbol{\mu}(\mathbf{x})$ e o logaritmo da variância $\log\boldsymbol{\sigma}^2(\mathbf{x})$ do posterior aproximado $q(\mathbf{z}\mid\mathbf{x})=\mathcal{N}(\boldsymbol{\mu},\mathrm{diag}(\boldsymbol{\sigma}^2))$, com $\mathbf{z}\in\mathbb{R}^{d}$ e $d\in\{2,8\}$. A amostragem usa o truque da reparametrização, $\mathbf{z}=\boldsymbol{\mu}+\boldsymbol{\sigma}\odot\boldsymbol{\epsilon}$ com $\boldsymbol{\epsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$. O decodificador espelha o codificador (as mesmas camadas ocultas em ordem inversa) e termina em 784 logits, aos quais se aplica a sigmoide para obter as intensidades reconstruídas. A priori é $p(\mathbf{z})=\mathcal{N}(\mathbf{0},\mathbf{I})$.
+
+A função de custo é o negativo do limite inferior da evidência (\emph{ELBO}) por imagem, com peso $\beta=1$ sobre o termo de divergência:
+\begin{equation}
+\mathcal{L}(\mathbf{x}) = \underbrace{-\sum_{i=1}^{784}\Big[x_i\log\hat{x}_i+(1-x_i)\log(1-\hat{x}_i)\Big]}_{\text{reconstrução (entropia cruzada binária)}}
+\;+\;
+\underbrace{\tfrac{1}{2}\sum_{k=1}^{d}\Big(\mu_k^{2}+\sigma_k^{2}-\log\sigma_k^{2}-1\Big)}_{D_{\mathrm{KL}}\left(q(\mathbf{z}\mid\mathbf{x})\,\|\,p(\mathbf{z})\right)},
+\end{equation}
+em que $\hat{x}_i$ é a saída do decodificador. O primeiro termo mede o quanto a imagem reconstruída difere da original. O segundo, o KL, mede o quanto a distribuição que o codificador atribui a cada imagem difere da distribuição $\mathcal{N}(\mathbf{0},\mathbf{I})$; seu valor, em nats, indica quanta informação sobre a imagem o código $\mathbf{z}$ carrega. Os dois termos competem: reconstruir melhor exige usar mais informação do espaço latente (mais KL), enquanto o KL empurra todas as imagens para uma região comum, o que torna o espaço contínuo e permite gerar imagens novas. Todas as perdas são reportadas em \emph{nats} por imagem (soma sobre os pixels e média sobre as imagens). O treino usa o otimizador Adam, com sorteio novo da ordem das amostras a cada época, e \textbf{\emph{early stopping}}: o treino é interrompido quando a perda de validação não melhora por $p$ épocas consecutivas (paciência) e os pesos da melhor época são restaurados. Para que as perdas de validação e de teste sejam comparáveis entre modelos, o ruído $\boldsymbol{\epsilon}$ usado na avaliação é gerado por uma semente fixa.
+
+\subsection{Métricas de Avaliação}
+A \textbf{perda de validação} (e, na avaliação final, de teste) é o valor de $\mathcal{L}$ acima, médio sobre o conjunto, decomposto em reconstrução e KL. Para explorar o espaço latente, cada imagem do conjunto de teste é representada pela média do posterior, $\boldsymbol{\mu}(\mathbf{x})$, e são calculados:
+\begin{itemize}
+    \item \textbf{PCA:} ajustado às médias $\boldsymbol{\mu}$ do conjunto de treino e aplicado às do teste; para $d=8$ fornece a projeção em 2D e a fração de variância explicada por cada componente.
+    \item \textbf{Unidades ativas:} dimensões latentes cuja variância de $\mu_k$ entre as imagens excede 0,01; dimensões abaixo desse limiar valem quase o mesmo para todas as imagens, ou seja, o modelo as ignora (fenômeno chamado de colapso do posterior).
+    \item \textbf{Separação dos rótulos:} o \emph{silhouette} (de $-1$ a 1) mede se cada ponto está mais próximo da sua própria classe do que das outras; valores perto de 0 indicam classes sobrepostas. A acurácia do $k$-NN ($k=5$, ajustado nas representações do treino e avaliado nas do teste) indica o quanto a classe de uma imagem pode ser lida a partir dos vizinhos no espaço latente. O NMI e o ARI (de 0 a 1) medem o quanto os 10 grupos encontrados por um $k$-means, que não vê os rótulos, coincidem com as classes reais. Essas métricas servem para quantificar o que se vê nos gráficos; os rótulos não são usados no treino do VAE.
+\end{itemize}
+
+\subsection{Busca de Hiperparâmetros e Critério de Seleção}
+A Tabela~\ref{tab:hiper} resume o espaço explorado. A busca foi uma grade completa, feita \textbf{separadamente} para cada dimensão latente, pois a arquitetura pode variar com $d$: 6 topologias $\times$ 2 ativações $\times$ 2 taxas de aprendizado $\times$ 2 tamanhos de lote $\times$ 2 sementes (42 e 43), ou seja, 96 treinos por dimensão e 192 no total. Cada configuração é resumida pela média das duas sementes e todas as tentativas foram registradas no arquivo de log (\texttt{busca\_vae.csv}). Cada treino teve no máximo 80 épocas e paciência 8.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Hiperparâmetros explorados na busca e valores escolhidos. As topologias listam os tamanhos das camadas ocultas do codificador (o decodificador as espelha).}
+\label{tab:hiper}
+\begin{tabularx}{\textwidth}{lXll}
+\toprule
+\textbf{Hiperparâmetro} & \textbf{Valores explorados} & \textbf{Escolhido ($d=2$)} & \textbf{Escolhido ($d=8$)} \\
+\midrule
+Camadas ocultas & [256], [512], [512,256], [1024,512], [512,256,128], [1024,512,256] & [512,256,128] & [1024,512] \\
+Ativação & ReLU, tanh & tanh & ReLU \\
+Taxa de aprendizado & $10^{-3}$, $5\times10^{-4}$ & $5\times10^{-4}$ & $5\times10^{-4}$ \\
+Tamanho do lote & 128, 256 & 256 & 256 \\
+\bottomrule
+\end{tabularx}
+\smallskip
+
+\footnotesize Fixos: otimizador Adam, $\beta=1$, busca com no máximo 80 épocas e paciência 8.
+\end{table}
+
+\textbf{Critério de seleção.} Para cada dimensão latente, escolhe-se a configuração de \textbf{menor perda de validação média} (as duas sementes), conforme pedido no enunciado. A Tabela~\ref{tab:config} traz as configurações escolhidas e o número de parâmetros. A avaliação final (Seção~\ref{sec:resultados}) retreina cada uma com 5 sementes (42 a 46) e \textbf{até 200 épocas}, com a mesma paciência de 8: na busca, 43\% dos treinos de $d=2$ e 65\% dos de $d=8$ terminaram por atingir o limite de 80 épocas, isto é, ainda estavam melhorando, e por isso o orçamento foi ampliado na avaliação final.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Configurações selecionadas. A perda de validação da busca é a média de 2 sementes (80 épocas); a da avaliação final, de 5 sementes (até 200 épocas).}
+\label{tab:config}
+\begin{tabular}{lcccccc}
+\toprule
+$d$ & \textbf{Camadas ocultas} & \textbf{Ativação} & \textbf{lr} & \textbf{Lote} & \textbf{Parâmetros} & \textbf{Perda de val. (busca / final)} \\
+\midrule
+2 & [512, 256, 128] & tanh & $5\times10^{-4}$ & 256 & 1\,133\,844 & 250,45 / 250,49 \\
+8 & [1024, 512] & ReLU & $5\times10^{-4}$ & 256 & 2\,670\,368 & 235,35 / 235,09 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Dinâmica de Treinamento e Convergência}
+
+A Figura~\ref{fig:curvas} mostra, para as duas dimensões latentes, a evolução da perda total, do termo de reconstrução e da divergência KL no treino e na validação (semente 42, avaliação final).
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/curvas_treino.png}
+\caption{Curvas de treino e validação do VAE com espaço latente 2D (acima) e 8D (abaixo), semente 42. A linha tracejada marca a melhor época, cujos pesos são restaurados.}
+\label{fig:curvas}
+\end{figure}
+
+\textbf{Análise Crítica da Dinâmica de Convergência:}
+\begin{itemize}
+    \item \textbf{Convergência:} a perda cai de forma muito rápida nas primeiras 10 épocas (de cerca de 310 a 320 para menos de 260 nats no treino) e depois decresce lentamente. Na avaliação final, com até 200 épocas, a melhor época ficou entre 54 e 99 ($d=2$) e entre 91 e 123 ($d=8$), e todos os 10 treinos terminaram por \emph{early stopping} (62 a 107 e 99 a 131 épocas). O ganho em relação ao treino de 80 épocas foi pequeno, de cerca de 0,25 nat na perda de teste média (252,61 para 252,36 em $d=2$ e 237,08 para 236,82 em $d=8$).
+    \item \textbf{Reconstrução $\times$ KL:} enquanto a reconstrução diminui, o KL \emph{aumenta} ao longo do treino (de cerca de 4 e 8 nats na primeira época para 7 e 13 nats, em $d=2$ e $d=8$), pois o modelo passa gradualmente a usar mais informação do espaço latente para reconstruir melhor. O KL de $d=8$ é cerca do dobro do de $d=2$ e a validação oscila mais nele (curva laranja) do que na perda total.
+    \item \textbf{Generalização:} as curvas de treino e validação ficam muito próximas, com uma diferença de poucos nats na melhor época (1,0 em $d=2$ e 1,5 em $d=8$ nas médias da busca), sem sinal de sobreajuste. O \emph{early stopping} atua, na prática, como critério de parada por estagnação da validação.
+    \item \textbf{Variabilidade:} o desvio padrão da perda de validação entre sementes é pequeno: 0,64 nat ($d=2$) e 0,18 nat ($d=8$) na avaliação final com 5 sementes, e em média 0,4 e 0,5 nat entre as duas sementes da busca.
+\end{itemize}
+
+\section{Resultados e Desempenho Comparativo (\texorpdfstring{$d=2$ $\times$ $d=8$}{d=2 x d=8})}
+\label{sec:resultados}
+
+\subsection{Função de custo no conjunto de teste}
+A Tabela~\ref{tab:resultados} reúne as métricas finais. O VAE com espaço latente 8D obteve perda de teste 15,5 nats (6,2\%) menor que o de 2D, ou seja, uma redução de 22,1 nats no termo de reconstrução, parcialmente compensada por 6,5 nats a mais de KL: com mais dimensões o modelo transmite mais informação por imagem (maior KL) e reconstrói melhor. A Figura~\ref{fig:reconstrucao} compara reconstruções e a Figura~\ref{fig:amostras} mostra amostras geradas pela distribuição a priori.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Resultados finais no conjunto de teste (média $\pm$ desvio padrão de 5 sementes, em nats por imagem).}
+\label{tab:resultados}
+\begin{tabular}{lrr}
+\toprule
+& \textbf{Latente 2D} & \textbf{Latente 8D} \\
+\midrule
+Perda total ($-$ELBO) & 252,36 $\pm$ 0,64 & 236,82 $\pm$ 0,18 \\
+Reconstrução (entropia cruzada) & 245,46 $\pm$ 0,72 & 223,39 $\pm$ 0,45 \\
+Divergência KL & 6,90 $\pm$ 0,08 & 13,43 $\pm$ 0,30 \\
+Perda de validação & 250,49 $\pm$ 0,64 & 235,09 $\pm$ 0,18 \\
+Unidades latentes ativas & 2 & 7,2 $\pm$ 0,4 \\
+Parâmetros & 1\,133\,844 & 2\,670\,368 \\
+Épocas treinadas & 87,0 $\pm$ 16,3 & 107,2 $\pm$ 13,4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/reconstrucoes.png}
+\caption{Imagens de teste originais (uma por classe) e suas reconstruções $\sigma(\text{decodificador}(\boldsymbol{\mu}))$ pelos VAEs com espaço latente 2D e 8D (semente 42).}
+\label{fig:reconstrucao}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/amostras_prior.png}
+\caption{Imagens geradas decodificando $\mathbf{z}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$ (80 amostras por modelo, semente 42).}
+\label{fig:amostras}
+\end{figure}
+
+\textbf{Observações.}
+\begin{itemize}
+    \item \textbf{Reconstruções:} ambos os modelos preservam a silhueta, o brilho global e a classe, mas suavizam os detalhes finos (o texto da camiseta, as listras do casaco). O modelo 8D recupera mais detalhes (alças do vestido, mangas, o solado do tênis e da bota), enquanto o 2D tende a produzir um protótipo da região do espaço latente onde a imagem caiu (por exemplo, a camisa de mangas longas, que sai borrada).
+    \item \textbf{Geração:} as amostras da priori são nítidas o bastante para identificar a classe nos dois modelos. As do 8D são mais variadas em detalhes (sandálias, bolsas com alça, camisetas de tons diferentes) e algumas são ambíguas ou com textura irregular, o que indica regiões da priori que o decodificador cobre mal.
+\end{itemize}
+
+\subsection{Exploração do espaço latente}
+
+A Figura~\ref{fig:lat2d} mostra o espaço latente 2D do conjunto de teste, colorido pelo rótulo, e a Figura~\ref{fig:lat8d} mostra a projeção por PCA do espaço 8D. O decodificador aplicado a uma grade de pontos do espaço 2D (Figura~\ref{fig:variedade}) revela como o modelo organiza as classes. Os gráficos por classe estão no Apêndice~\ref{ap:classes}.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.78\textwidth]{resultados/final/figuras/latente2d_rotulos.png}
+\caption{Espaço latente 2D (médias $\boldsymbol{\mu}$ das 10\,000 imagens de teste), coloridas pelo rótulo (semente 42).}
+\label{fig:lat2d}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.78\textwidth]{resultados/final/figuras/latente8d_pca_rotulos.png}
+\caption{Espaço latente 8D projetado nas duas primeiras componentes principais (PCA ajustado no treino), coloridas pelo rótulo (semente 42). O título indica a variância explicada.}
+\label{fig:lat8d}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\begin{minipage}[b]{0.50\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{resultados/final/figuras/variedade_2d.png}
+\end{minipage}
+\hfill
+\begin{minipage}[b]{0.47\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{resultados/final/figuras/pca_variancia_8d.png}
+\end{minipage}
+\caption{Esquerda: imagens decodificadas em uma grade $20\times20$ do espaço latente 2D, para $z_1,z_2\in[-3,3]$. Direita: variância explicada por cada componente principal do espaço latente 8D (semente 42).}
+\label{fig:variedade}
+\end{figure}
+
+A Tabela~\ref{tab:latente} quantifica a separação das classes, no espaço latente completo e na projeção em 2D, e a Tabela~\ref{tab:recall} mostra o desempenho do classificador $k$-NN por classe.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Separação dos rótulos no conjunto de teste (média $\pm$ desvio padrão de 5 sementes). Para $d=2$ o espaço latente é a própria projeção. NMI e ARI referem-se a um $k$-means com 10 grupos.}
+\label{tab:latente}
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Modelo} & \textbf{Representação} & \textbf{Silhouette} & \textbf{Acurácia $k$-NN} & \textbf{NMI} & \textbf{ARI} \\
+\midrule
+$d=2$ & latente 2D & 0,086 $\pm$ 0,005 & 0,734 $\pm$ 0,010 & 0,515 $\pm$ 0,011 & 0,350 $\pm$ 0,023 \\
+$d=8$ & latente 8D completo & 0,051 $\pm$ 0,007 & 0,833 $\pm$ 0,003 & 0,483 $\pm$ 0,027 & 0,355 $\pm$ 0,028 \\
+$d=8$ & projeção PCA 2D & $-$0,056 $\pm$ 0,040 & 0,374 $\pm$ 0,070 & 0,309 $\pm$ 0,073 & 0,184 $\pm$ 0,057 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Recall do classificador $k$-NN por classe, no conjunto de teste (média de 5 sementes).}
+\label{tab:recall}
+\begin{tabular}{lcc|lcc}
+\toprule
+\textbf{Classe} & \textbf{2D} & \textbf{8D} & \textbf{Classe} & \textbf{2D} & \textbf{8D} \\
+\midrule
+T-shirt/top & 0,769 & 0,815 & Sandal & 0,866 & 0,887 \\
+Trouser & 0,900 & 0,955 & Shirt & 0,324 & 0,541 \\
+Pullover & 0,579 & 0,761 & Sneaker & 0,821 & 0,930 \\
+Dress & 0,795 & 0,854 & Bag & 0,920 & 0,945 \\
+Coat & 0,465 & 0,714 & Ankle boot & 0,900 & 0,932 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Há formação de clusters no espaço latente?} Em parte. No espaço 2D (Figura~\ref{fig:lat2d}) as imagens se organizam em regiões compactas e reconhecíveis (calças, bolsas, botas, tênis, sandálias), mas elas se tocam: não há vazios entre os grupos, e a nuvem toda ocupa aproximadamente a região da priori $\mathcal{N}(\mathbf{0},\mathbf{I})$, efeito do termo KL, que aproxima as nuvens de todas as imagens. Por isso os agrupamentos são pouco isolados: o \emph{silhouette} dos rótulos é baixo (0,086) e um $k$-means com 10 grupos recupera os rótulos de modo moderado (NMI 0,52). Duas grandes regiões se destacam: a do calçado (sandália, tênis, bota) e a das peças superiores (camiseta, vestido, pulôver, casaco, camisa); a bolsa forma uma região separada, e a calça ocupa uma faixa própria. No espaço 8D, a projeção em 2D (Figura~\ref{fig:lat8d}) mostra pouca estrutura de agrupamentos (silhouette negativo, $-0{,}056$), mas isso decorre da projeção, e não do espaço: no espaço 8D completo o $k$-NN atinge 83\% de acerto, o que indica que há estrutura de classes que a projeção não preserva.
+
+\textbf{Há separação dos rótulos no espaço latente?} Sim, mas desigual, e a separação segue a semelhança visual das classes. No 2D (Figura~\ref{fig:lat2d} e Apêndice~\ref{ap:classes}) são bem separadas a calça (recall 0,90), a bolsa (0,92), a bota (0,90) e, em menor grau, o tênis (0,82) e a sandália (0,87), embora as três classes de calçado sejam vizinhas. As classes de peças superiores se sobrepõem fortemente no centro-esquerda: camisa (0,32), casaco (0,47) e pulôver (0,58) são as mais confundidas, e a camisa se espalha pela região das demais. O espaço 8D melhora todas as classes (acurácia $k$-NN de 0,73 para 0,83) e, principalmente, as classes de peças superiores (casaco de 0,47 para 0,71, pulôver de 0,58 para 0,76, camisa de 0,32 para 0,54), mas a camisa continua sendo a classe mais difícil. Na projeção PCA 2D do espaço 8D a separação cai muito (acurácia $k$-NN de 0,37): só calça e tênis ficam parcialmente isolados, nas bordas da nuvem (Apêndice~\ref{ap:classes}).
+
+\textbf{A projeção ilustra quanto da variância?} A \emph{variância explicada} indica que fração da dispersão total dos pontos fica visível no gráfico 2D. Para $d=2$ não há perda: os dois eixos são o próprio espaço latente, então o gráfico mostra 100\% da variância. Para $d=8$ a projeção ilustra pouco: as duas primeiras componentes principais (PC1 e PC2) explicam apenas \textbf{31,3\%} (15,8\% e 15,5\% na semente 42; média de 5 sementes: 31,4\% $\pm$ 0,8\%), ou seja, cerca de 69\% da variação entre as imagens não aparece no gráfico. O motivo está na Figura~\ref{fig:variedade} (direita): a variância se divide quase igualmente entre sete componentes (de 13,0\% a 15,8\% cada) e a oitava vale praticamente 0\% (é a dimensão que colapsou, Figura~\ref{fig:ativas}). Em outras palavras, a nuvem de pontos não é mais alongada em nenhuma direção especial, e por isso nenhum par de componentes a resume bem. Isso é esperado em um VAE: o termo KL empurra os pontos para uma gaussiana esférica, com a mesma dispersão em todas as direções. Como consequência, ao reduzir de 8 para 2 dimensões, o PCA sobrepõe classes que estavam separadas nas dimensões descartadas. Por isso a projeção parece mais misturada do que o espaço 8D realmente é: o $k$-NN acerta 83\% no espaço completo e apenas 37\% na projeção.
+
+\section{Discussão e Lições Aprendidas}
+\label{sec:discussao}
+Esta seção resume o que a busca de hiperparâmetros e a comparação entre 2D e 8D mostraram. Chamamos de \emph{variação entre sementes} o quanto o resultado muda apenas por trocar o sorteio inicial; diferenças menores que isso não são conclusivas.
+
+\begin{itemize}
+    \item \textbf{Arquitetura importa mais que o resto.} Na busca, o fator que mais alterou a perda de validação foi a arquitetura (número e tamanho das camadas ocultas): a diferença entre a melhor e a pior foi de 3,1\% ($d=2$) e 2,3\% ($d=8$), contra menos de 1\% para ativação, taxa de aprendizado e tamanho do lote (Tabela~\ref{tab:sens}, Apêndice~\ref{ap:sens}). Com $d=2$, redes de uma única camada oculta ([256] e [512]) ficaram de 7 a 8 nats atrás das mais profundas: com apenas duas dimensões no gargalo, o codificador e o decodificador precisam de mais capacidade para compensar. Entre as quatro arquiteturas com duas ou três camadas, a diferença (252,3 a 252,8) é do tamanho da variação entre sementes (0,4 nat), então não dá para dizer qual delas é de fato melhor.
+    \item \textbf{A melhor arquitetura depende de $d$.} Para $d=2$ foi escolhida a de três camadas ([512,256,128], tanh); para $d=8$, a de duas camadas largas ([1024,512], ReLU). A arquitetura [512,256,128], a melhor no 2D, foi a pior de todas no 8D (242,2 nats, atrás até das de uma só camada). A ativação teve efeitos opostos: no 2D, tanh foi melhor por apenas 0,3 nat, menos que a variação entre sementes, logo inconclusivo; no 8D, ReLU foi melhor por 2,0 nats, mais que essa variação, logo confiável.
+    \item \textbf{Taxa de aprendizado e lote.} A taxa $5\times10^{-4}$ foi um pouco melhor que $10^{-3}$ (0,3 nat no 2D e 0,8 nat no 8D). Como a taxa menor aprende mais devagar, o limite de 80 épocas da busca a prejudica mais, o que torna essa vantagem, se algo, conservadora. O tamanho do lote quase não alterou a perda (0,06 e 0,24 nat), mas lotes de 128 demoraram cerca de 1,7 vez mais por treino (312 s contra 179 s, em média).
+    \item \textbf{Colapso do posterior.} Com $d=8$, em média só 7,2 das 8 dimensões ficaram ativas: em 4 das 5 sementes, uma dimensão praticamente não varia entre as imagens (variância de $\mu$ abaixo de 0,01) e tem KL quase nulo (Figura~\ref{fig:ativas}, semente 42). O modelo ignora essa dimensão e a trata como ruído da priori. Com $d=2$, as duas dimensões são ativas em todas as sementes. Além disso, mesmo com 7 dimensões úteis, o ganho sobre o 2D foi de apenas 6\% na perda de teste: aumentar $d$ ajuda, mas com retornos cada vez menores.
+    \item \textbf{2D $\times$ 8D.} O espaço 2D pode ser visto diretamente e permite percorrer o decodificador (Figura~\ref{fig:variedade}), ao custo de reconstruções menos detalhadas e de classes parecidas (camisa, casaco, pulôver) coladas. O espaço 8D reconstrói melhor e separa melhor as classes, mas só pode ser visualizado por projeções. Como a variância se distribui quase igualmente entre as dimensões, a projeção em 2D descarta cerca de dois terços da informação e esconde boa parte da separação que existe.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Perda de validação média por topologia (média de todas as configurações das demais variáveis, 2 sementes) e número de parâmetros. Em negrito, a melhor topologia de cada dimensão.}
+\label{tab:sens}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{\textbf{Latente 2D}} & \multicolumn{2}{c}{\textbf{Latente 8D}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+\textbf{Camadas ocultas} & Parâmetros & Perda de val. & Parâmetros & Perda de val. \\
+\midrule
+{[256]} & 404\,244 & 260,24 & 408\,864 & 240,57 \\
+{[512]} & 807\,700 & 259,52 & 816\,928 & 239,12 \\
+{[512, 256]} & 1\,068\,820 & 252,64 & 1\,073\,440 & 237,11 \\
+{[1024, 512]} & 2\,661\,140 & 252,76 & 2\,670\,368 & \textbf{236,63} \\
+{[512, 256, 128]} & 1\,133\,844 & 252,54 & 1\,136\,160 & 242,16 \\
+{[1024, 512, 256]} & 2\,922\,260 & \textbf{252,35} & 2\,926\,880 & 239,66 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.85\textwidth]{resultados/final/figuras/unidades_ativas.png}
+\caption{KL média por dimensão latente (barras) e variância de $\mu$ (linha, escala logarítmica; tracejado = limiar 0,01) na semente 42. Em $d=8$ a dimensão 2 colapsou.}
+\label{fig:ativas}
+\end{figure}
+
+\appendix
+\section{Gráficos do Espaço Latente por Classe}
+\label{ap:classes}
+
+As figuras a seguir destacam, em cada painel, uma classe sobre a nuvem completa (em cinza), para o espaço latente 2D e para a projeção PCA do espaço 8D (semente 42).
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/latente2d_por_classe.png}
+\caption{Espaço latente 2D, uma classe por painel.}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/latente8d_pca_por_classe.png}
+\caption{Projeção PCA do espaço latente 8D, uma classe por painel.}
+\end{figure}
+
+\section{Sensibilidade aos Hiperparâmetros}
+\label{ap:sens}
+
+Perda de validação média ao fixar cada valor de hiperparâmetro e promediar sobre todas as demais configurações da busca.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/figuras/sensibilidade_latente2.png}\\[0.3em]
+\includegraphics[width=\textwidth]{resultados/figuras/sensibilidade_latente8.png}
+\caption{Sensibilidade aos hiperparâmetros da busca para $d=2$ (acima) e $d=8$ (abaixo).}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/figuras/perda_vs_parametros.png}
+\caption{Perda de validação média de cada uma das 96 configurações por dimensão latente em função do número de parâmetros. O círculo vermelho marca a configuração escolhida.}
+\end{figure}
+
+\end{document}

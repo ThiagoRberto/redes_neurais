@@ -1,0 +1,59 @@
+  File "C:\Users\thiag\AppData\Local\Programs\Python\Python39\lib\site-packages\joblib\externals\loky\backend\context.py", line 257, in _count_physical_cores
+    cpu_info = subprocess.run(
+  File "C:\Users\thiag\AppData\Local\Programs\Python\Python39\lib\subprocess.py", line 505, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "C:\Users\thiag\AppData\Local\Programs\Python\Python39\lib\subprocess.py", line 951, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "C:\Users\thiag\AppData\Local\Programs\Python\Python39\lib\subprocess.py", line 1420, in _execute_child
+    hp, ht, pid, tid = _winapi.CreateProcess(executable, args,
+Hiperparametros lidos de resultados/configs_finais.json
+Dispositivo: cuda  treino=50000 val=10000 teste=10000
+[latente 2D] seed=42 val=249.698 teste=251.555 (recon=244.599 kl=6.957) epocas=107 ativas=2 kNN=0.741 tempo=229s
+[latente 2D] seed=43 val=250.551 teste=252.376 (recon=245.410 kl=6.966) epocas=88 ativas=2 kNN=0.737 tempo=230s
+[latente 2D] seed=44 val=251.443 teste=253.268 (recon=246.498 kl=6.770) epocas=62 ativas=2 kNN=0.717 tempo=157s
+[latente 2D] seed=45 val=250.186 teste=252.016 (recon=245.072 kl=6.944) epocas=93 ativas=2 kNN=0.737 tempo=243s
+[latente 2D] seed=46 val=250.552 teste=252.590 (recon=245.728 kl=6.862) epocas=85 ativas=2 kNN=0.738 tempo=223s
+[latente 8D] seed=42 val=235.297 teste=236.936 (recon=223.513 kl=13.423) epocas=102 ativas=7 kNN=0.832 tempo=223s
+[latente 8D] seed=43 val=234.843 teste=236.549 (recon=222.654 kl=13.895) epocas=101 ativas=8 kNN=0.837 tempo=218s
+[latente 8D] seed=44 val=235.077 teste=236.842 (recon=223.790 kl=13.053) epocas=103 ativas=7 kNN=0.831 tempo=223s
+[latente 8D] seed=45 val=235.026 teste=236.759 (recon=223.350 kl=13.409) epocas=131 ativas=7 kNN=0.837 tempo=278s
+[latente 8D] seed=46 val=235.214 teste=237.015 (recon=223.668 kl=13.347) epocas=99 ativas=7 kNN=0.831 tempo=213s
+
+=== Tabela final (media sobre 5 seeds) ===
+                               0            1
+latent_dim                 2.000        8.000
+val_loss_mean            250.486      235.091
+val_loss_std               0.639        0.176
+test_loss_mean           252.361      236.820
+test_loss_std              0.641        0.180
+test_recon_mean          245.461      223.395
+test_recon_std             0.715        0.446
+test_kl_mean               6.900       13.425
+test_kl_std                0.084        0.302
+active_units_mean          2.000        7.200
+active_units_std           0.000        0.447
+explained_2d_mean          1.000        0.314
+explained_2d_std           0.000        0.008
+silhouette_mean            0.086        0.051
+silhouette_std             0.005        0.007
+knn_acc_mean               0.734        0.833
+knn_acc_std                0.010        0.003
+kmeans_nmi_mean            0.515        0.483
+kmeans_nmi_std             0.011        0.027
+kmeans_ari_mean            0.350        0.355
+kmeans_ari_std             0.023        0.028
+silhouette_2d_mean         0.086       -0.056
+silhouette_2d_std          0.005        0.040
+knn_acc_2d_mean            0.734        0.374
+knn_acc_2d_std             0.010        0.070
+kmeans_nmi_2d_mean         0.515        0.309
+kmeans_nmi_2d_std          0.011        0.073
+kmeans_ari_2d_mean         0.350        0.184
+kmeans_ari_2d_std          0.023        0.057
+epochs_trained_mean       87.000      107.200
+epochs_trained_std        16.325       13.387
+fit_time_mean            216.500      231.069
+fit_time_std              33.920       26.480
+n_params             1133844.000  2670368.000
+
+Resultados salvos em resultados/final
