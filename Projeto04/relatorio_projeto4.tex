@@ -1,0 +1,272 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[brazilian]{babel}
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{tabularx}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.2ex plus 0.5ex minus .2ex}{0.6ex}
+\titlespacing*{\subsection}{0pt}{1.0ex plus 0.4ex minus .2ex}{0.4ex}
+
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE \textbf{Projeto 4: Previsão de Temperatura com LSTM e GRU}} \\[0.35em]
+    {\large Disciplina: Introdução às Redes Neurais Artificiais} \\[0.3em]
+    \textbf{Autor:} Thiago Roberto Fernandes Rocha (RA: 149.641) \\[0.2em]
+    \textbf{Repositório / Código Reprodutível:} \url{https://github.com/ThiagoRberto/redes_neurais}
+\end{center}
+\vspace{-0.5em}
+\hrule
+\vspace{0.8em}
+
+\section{Configuração Experimental e Reprodutibilidade}
+
+\subsection{Tarefa, Dados e Pré-processamento}
+A tarefa escolhida é de \textbf{previsão}: dado o histórico recente das medições, prever a temperatura do ar $k=24$ horas à frente, isto é, $T(t+24)$. Foram usados os dados horários da estação automática \textbf{A728 de Taubaté (SP)}, do Instituto Nacional de Meteorologia (INMET), de janeiro de 2012 a dezembro de 2025 (122\,736 horas). Os arquivos anuais são baixados do portal do INMET.
+
+Cada hora tem seis variáveis: temperatura, pressão atmosférica, umidade relativa, precipitação (transformada por $\log(1+x)$, pois é muito assimétrica) e as duas componentes do vento, $v\cos\theta$ e $v\sin\theta$ (a direção é um ângulo, então não pode ser usada diretamente). A elas se somam quatro variáveis de calendário, $\sin$ e $\cos$ da hora do dia e do dia do ano, que informam ao modelo a posição no ciclo diário e anual, totalizando 10 entradas. A radiação solar foi descartada porque faltava em cerca de 46\% das horas.
+
+\textbf{Tratamento de falhas.} Cerca de 12\% das horas não têm medida. Valores fora de faixas físicas plausíveis foram marcados como ausentes; falhas de até 6 horas seguidas foram preenchidas por interpolação linear e as maiores foram mantidas como ausentes. Toda janela de entrada que contém uma hora ausente, ou cujo alvo está ausente, é descartada, de modo que o modelo nunca vê dados inventados em falhas longas. O horário foi convertido de UTC para o local (UTC$-3$).
+
+\textbf{Partição cronológica.} Como se trata de série temporal, a divisão respeita o tempo (Tabela~\ref{tab:dados}): sorteios aleatórios deixariam dados futuros do teste e validação vazarem para o treinamento. Uma amostra só é usada se o instante final da janela e o instante do alvo ($+24$ h) caem no mesmo conjunto, para que nenhum alvo de treino se sobreponha ao período de validação. As médias e desvios usados na padronização foram calculados \emph{somente no treino}. Para acelerar o treino, as janelas de treino foram tomadas de 4 em 4 horas (janelas consecutivas são quase idênticas).
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Partição cronológica dos dados (janela de 24 h, que é a escolhida).}
+\label{tab:dados}
+\begin{tabular}{llr}
+\toprule
+\textbf{Conjunto} & \textbf{Período} & \textbf{Amostras} \\
+\midrule
+Treino & 2012--2019 & 16\,075 \\
+Validação (seleção de hiperparâmetros e \emph{early stopping}) & 2020--2022 & 17\,745 \\
+Teste (avaliação final) & 2023--2025 & 22\,372 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Modelo}
+O modelo (\texttt{modelo.py}) recebe uma janela de $W$ horas com 10 variáveis, passa-a por uma rede recorrente de uma ou duas camadas, \texttt{LSTM} ou \texttt{GRU} do PyTorch, e usa o \emph{último estado oculto} em uma camada linear que produz um único número: a temperatura prevista, padronizada. A célula LSTM mantém um estado de memória controlado por três portas (entrada, esquecimento e saída); a GRU é uma versão mais simples, com duas portas e sem estado de memória separado, e portanto com menos parâmetros. A função de custo é o erro quadrático médio (MSE) sobre o alvo padronizado. O otimizador é o Adam, com \emph{clipping} de gradiente em 1,0 (contra explosão de gradientes) e \emph{early stopping}: o treino para quando o MSE de validação não melhora por $p=8$ épocas seguidas e os pesos da melhor época são restaurados.
+
+\textbf{Equações das células.} Em cada hora $t$ da janela, a camada recebe a entrada $\mathbf{x}_t\in\mathbb{R}^{10}$ e o estado oculto anterior $\mathbf{h}_{t-1}\in\mathbb{R}^{H}$ ($H$ é o número de unidades), e produz o novo estado $\mathbf{h}_t$. Com $\sigma$ a sigmoide, $\odot$ o produto elemento a elemento e $W,U,\mathbf{b}$ pesos e vieses aprendidos, a LSTM (convenção do PyTorch) calcula
+\begin{align}
+\mathbf{i}_t &= \sigma(W_i\mathbf{x}_t + U_i\mathbf{h}_{t-1} + \mathbf{b}_i), &
+\mathbf{f}_t &= \sigma(W_f\mathbf{x}_t + U_f\mathbf{h}_{t-1} + \mathbf{b}_f), \\
+\mathbf{g}_t &= \tanh(W_g\mathbf{x}_t + U_g\mathbf{h}_{t-1} + \mathbf{b}_g), &
+\mathbf{o}_t &= \sigma(W_o\mathbf{x}_t + U_o\mathbf{h}_{t-1} + \mathbf{b}_o), \\
+\mathbf{c}_t &= \mathbf{f}_t\odot\mathbf{c}_{t-1} + \mathbf{i}_t\odot\mathbf{g}_t, &
+\mathbf{h}_t &= \mathbf{o}_t\odot\tanh(\mathbf{c}_t),
+\end{align}
+em que $\mathbf{c}_t$ é o estado de memória, $\mathbf{f}_t$ (esquecimento) decide quanto da memória antiga é mantido, $\mathbf{i}_t$ (entrada) quanto da informação nova $\mathbf{g}_t$ entra na memória e $\mathbf{o}_t$ (saída) quanto da memória é exposto como $\mathbf{h}_t$. A GRU funde memória e estado oculto e usa só duas portas, a de reinício $\mathbf{r}_t$ e a de atualização $\mathbf{z}_t$:
+\begin{align}
+\mathbf{r}_t &= \sigma(W_r\mathbf{x}_t + U_r\mathbf{h}_{t-1} + \mathbf{b}_r), &
+\mathbf{z}_t &= \sigma(W_z\mathbf{x}_t + U_z\mathbf{h}_{t-1} + \mathbf{b}_z), \\
+\mathbf{n}_t &= \tanh\big(W_n\mathbf{x}_t + \mathbf{b}_{in} + \mathbf{r}_t\odot(U_n\mathbf{h}_{t-1} + \mathbf{b}_{hn})\big), &
+\mathbf{h}_t &= (1-\mathbf{z}_t)\odot\mathbf{n}_t + \mathbf{z}_t\odot\mathbf{h}_{t-1}.
+\end{align}
+Em ambas, o estado inicial é zero e, com duas camadas, a sequência de $\mathbf{h}_t$ da primeira é a entrada da segunda. A previsão é $\hat y = \mathbf{w}^\top\mathbf{h}_W^{(L)} + b$, isto é, uma combinação linear do estado da última camada ($L$) na última hora da janela ($t=W$).
+
+\textbf{Número de parâmetros.} Uma camada com $d$ entradas e $H$ unidades tem $4\,[H(d+H)+2H]$ parâmetros na LSTM (quatro blocos: $i$, $f$, $g$, $o$) e $3\,[H(d+H)+2H]$ na GRU (três blocos: $r$, $z$, $n$); a camada de saída soma $H+1$. Com $H=32$, a primeira camada ($d=10$) tem 5\,632 parâmetros na LSTM e 4\,224 na GRU, e a segunda ($d=32$), 8\,448 e 6\,336, o que dá os 14\,113 e 10\,593 informados na Tabela~\ref{tab:final}. A GRU tem, portanto, 25\% menos parâmetros com a mesma largura.
+
+\subsection{Métricas de Avaliação}
+Todas as métricas são calculadas em graus Celsius, no conjunto de teste:
+\begin{itemize}
+    \item \textbf{RMSE e MAE:} erro típico da previsão, em $^\circ$C (o RMSE penaliza mais os erros grandes).
+    \item \textbf{$R^2$:} fração da variância da temperatura explicada pelo modelo.
+    \item \textbf{Ganho sobre a persistência:} $1-\mathrm{MSE}_{\text{modelo}}/\mathrm{MSE}_{\text{persistência}}$. Positivo significa que o modelo é melhor que simplesmente repetir a temperatura de agora.
+    \item \textbf{Erro máximo absoluto.}
+\end{itemize}
+
+Como referência, foram avaliados três \emph{baselines} sem rede neural: (i) \textbf{persistência}, $\hat T(t+24)=T(t)$; (ii) \textbf{climatologia}, a média do treino para o mesmo mês e a mesma hora; (iii) \textbf{regressão Ridge} sobre a janela inteira achatada, com $\alpha$ escolhido na validação.
+
+\subsection{Busca de Hiperparâmetros e Critério de Seleção}
+A busca foi uma grade completa com o conjunto de validação (Tabela~\ref{tab:hiper}): 2 células $\times$ 2 janelas $\times$ 3 tamanhos $\times$ 2 profundidades $\times$ 2 taxas de aprendizado $\times$ dropout (0 ou 0,2, este só com duas camadas, pois o dropout atua entre camadas), o que dá 72 configurações; cada uma foi treinada com 2 sementes (42 e 43), em 144 treinos, todos registrados em \texttt{busca\_rnn.csv}. Cada treino teve no máximo 60 épocas e paciência 8; apenas 8\% atingiram o limite de épocas. Uma segunda busca, \emph{ampliada}, com outros valores (Tabela~\ref{tab:hiper}; 32 configurações e 64 treinos, em \texttt{busca\_ampliada.csv}), verificou se a grade inicial era limitante; os resultados estão na Seção~\ref{sec:ampliada}.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Hiperparâmetros explorados nas duas buscas (inicial e ampliada, Seção~\ref{sec:ampliada}) e valores escolhidos (iguais para LSTM e GRU).}
+\label{tab:hiper}
+\begin{tabularx}{\textwidth}{lXXl}
+\toprule
+\textbf{Hiperparâmetro} & \textbf{Busca inicial} & \textbf{Busca ampliada} & \textbf{Escolhido} \\
+\midrule
+Célula & LSTM, GRU & LSTM, GRU & (cada uma) \\
+Janela de entrada & 24 h, 48 h & 12 h, 24 h & 24 h \\
+Unidades ocultas & 16, 32, 64 & 64, 128 & 32 \\
+Camadas recorrentes & 1, 2 & 2, 3 & 2 \\
+Taxa de aprendizado & $3\times10^{-4}$, $10^{-3}$ & $10^{-3}$, $3\times10^{-3}$ & $10^{-3}$ \\
+Dropout & 0, 0,2 (só com 2 camadas) & 0 & 0 \\
+\bottomrule
+\end{tabularx}
+\smallskip
+
+\footnotesize Fixos: Adam, lote de 64, \emph{clipping} 1,0.
+\end{table}
+
+\textbf{Critério de seleção.} Para cada tipo de célula escolheu-se a configuração de menor MSE de validação médio das duas sementes. Embora os 10 melhores resultados sejam quase empatados (MSE padronizado entre 0,175 e 0,177), a configuração com 32 unidades e 2 camadas é uma das menores em número de parâmetros e foi a melhor para ambas as células. A busca ampliada não encontrou nada melhor (Seção~\ref{sec:ampliada}), então a escolha foi mantida. A avaliação final retreina cada uma com \textbf{5 sementes} (42 a 46) e até 150 épocas.
+
+\section{Dinâmica de Treinamento e Convergência}
+A Figura~\ref{fig:curvas} mostra as curvas de aprendizagem de uma execução de cada modelo (semente 42). O erro de treino cai de forma contínua, enquanto o de validação cai nas primeiras épocas, oscila e passa a subir levemente, e o \emph{early stopping} restaura os pesos da época 17 (linha tracejada). Ou seja, depois desse ponto a rede passa a decorar o treino sem melhorar em dados novos.
+
+\textbf{Overfitting.} Na época escolhida a perda de treino (0,160) já é cerca de 9\% menor que a de validação (0,175) nas melhores configurações da busca, e a distância só aumenta depois dela. O overfitting é leve: o treino tem apenas 16\,075 amostras muito correlacionadas entre si (janelas vizinhas se sobrepõem), mas a rede é pequena (10\,593 parâmetros). Por isso o \emph{early stopping} atua cedo (as execuções finais pararam em média após 22 a 27 épocas) e o dropout não trouxe ganho.
+
+As curvas ficam bem acima do zero porque o problema tem um limite de previsibilidade: o tempo daqui a 24 h depende de frentes e nuvens que a estação, sozinha, não enxerga. A validação cobre três anos distintos do treino, o que pode contribuir para a oscilação.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/curvas_aprendizagem.png}
+\caption{Curvas de aprendizagem (MSE do alvo padronizado, escala logarítmica) das configurações escolhidas.}
+\label{fig:curvas}
+\end{figure}
+
+\section{Resultados e Desempenho Comparativo}\label{sec:resultados}
+
+A Tabela~\ref{tab:final} reúne as métricas no teste (2023--2025). Para os modelos recorrentes mostram-se média e desvio padrão de 5 sementes; todos os modelos e baselines foram avaliados exatamente nas mesmas 22\,372 amostras.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Desempenho no conjunto de teste, previsão de 24 h. Modelos recorrentes: média $\pm$ desvio de 5 sementes.}
+\label{tab:final}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Modelo} & \textbf{RMSE ($^\circ$C)} & \textbf{MAE ($^\circ$C)} & \textbf{$R^2$} & \textbf{Ganho s/ persist.} & \textbf{Erro máx. ($^\circ$C)} \\
+\midrule
+Persistência & 2,653 & 1,884 & 0,734 & 0\% & 18,0 \\
+Climatologia & 2,820 & 2,184 & 0,699 & $-13,0\%$ & 12,9 \\
+Ridge ($\alpha=0{,}1$) & 2,277 & 1,697 & 0,804 & 26,3\% & 13,5 \\
+LSTM (14\,113 parâm.) & 2,212 $\pm$ 0,009 & 1,642 & 0,815 & 30,4\% & 11,4 \\
+GRU (10\,593 parâm.) & \textbf{2,195} $\pm$ 0,012 & \textbf{1,626} & \textbf{0,818} & \textbf{31,5\%} & 11,4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/comparacao_modelos.png}
+\caption{RMSE no teste e ganho de MSE sobre a persistência.}
+\label{fig:comparacao}
+\end{figure}
+
+\textbf{Leitura dos resultados.}
+\begin{itemize}
+    \item \textbf{As duas redes recorrentes superam todos os baselines.} O GRU reduz o RMSE de 2,65 $^\circ$C (persistência) para 2,20 $^\circ$C, um ganho de 31,5\% no MSE. A climatologia é pior que a persistência, pois ignora o tempo observado hoje.
+    \item \textbf{O ganho sobre o Ridge é modesto:} cerca de 0,07 a 0,08 $^\circ$C de RMSE. Grande parte do sinal é linear (ciclo diário e inércia térmica) e a não linearidade das redes acrescenta pouco.
+    \item \textbf{GRU e LSTM são praticamente equivalentes.} A diferença de 0,017 $^\circ$C no RMSE é pequena, mas maior que o desvio entre sementes ($\approx 0{,}01$) e consistente com a validação; o GRU, com 25\% menos parâmetros, foi o escolhido.
+\end{itemize}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/extras/figuras/serie_treino_teste.png}
+\caption{Temperatura real e prevista 24 h à frente em duas quinzenas do conjunto de treino (2018, esquerda) e do teste (2023, direita), semente 42.}
+\label{fig:serie}
+\end{figure}
+
+A Figura~\ref{fig:serie} mostra que as redes acompanham bem o ciclo diário, porém \textbf{suavizam os extremos}: os picos de calor mais altos são subestimados e os vales mais frios, às vezes, superestimados. A persistência, por repetir o dia anterior, acerta em dias parecidos, mas erra o dia inteiro quando há mudança de massa de ar (por exemplo, em 14 e 15 de julho). Isso é típico de modelos treinados com MSE: na dúvida, preveem o valor médio. Os painéis da esquerda mostram o mesmo comportamento \emph{dentro do treino}: as curvas previstas não colam na real (não há memorização), também suavizam os picos e também erram nas mudanças bruscas de massa de ar. O RMSE sobre todas as janelas de treino é de 2,08 $^\circ$C (GRU) e 2,06 $^\circ$C (LSTM), contra 2,17 e 2,18 $^\circ$C na validação e 2,20 e 2,22 $^\circ$C no teste, isto é, apenas 5\% pior fora do treino. O overfitting é, portanto, pequeno.
+
+\begin{figure}[ht]
+\centering
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{resultados/final/figuras/dispersao_teste.png}
+\end{minipage}\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{resultados/final/figuras/erro_por_hora.png}
+\end{minipage}
+\caption{Esquerda: previsto contra real no teste (GRU). Direita: RMSE por hora do dia do instante previsto.}
+\label{fig:disp}
+\end{figure}
+
+O gráfico da direita da Figura~\ref{fig:disp} mostra que o erro depende da hora do dia. O GRU erra menos de madrugada e de manhã (RMSE de cerca de 1,7 $^\circ$C entre 0 h e 8 h) e mais no fim da tarde (3,25 $^\circ$C às 16 h); a persistência segue o mesmo padrão, com 3,81 $^\circ$C às 16 h. O GRU é melhor que a persistência em todas as horas. À tarde a temperatura depende de nuvens e chuva, que a estação sozinha não antecipa com 24 h de antecedência.
+
+\subsection*{Análise de resíduos}
+A Figura~\ref{fig:res} mostra os resíduos (previsto $-$ real) do GRU no teste. O viés médio é pequeno ($-0{,}25$ $^\circ$C) e 96\% dos erros ficam abaixo de 5 $^\circ$C em módulo, mas há \textbf{assimetria nas caudas}: dentro dos 5\% de horas mais quentes (acima de 30,5 $^\circ$C) o modelo subestima em média 3,2 $^\circ$C, e nos 5\% mais frios (abaixo de 12,8 $^\circ$C) superestima em 1,3 $^\circ$C (MAE de 3,2 e 1,7 $^\circ$C, contra 1,4 $^\circ$C na faixa central). É a mesma suavização dos extremos vista na Figura~\ref{fig:serie}: com MSE, o modelo se aproxima da média nos casos incertos. O erro também varia com a estação: o RMSE mensal é de 1,7 a 2,0 $^\circ$C entre janeiro e maio e sobe para 2,5 a 2,8 $^\circ$C de agosto a novembro, época de seca e de passagem de frentes frias, em que a temperatura do dia seguinte é menos previsível.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/final/figuras/residuos.png}
+\caption{Resíduos do GRU no conjunto de teste (semente 42).}
+\label{fig:res}
+\end{figure}
+
+\section{Sensibilidade aos Hiperparâmetros}
+A Figura~\ref{fig:sens} mostra o MSE de validação médio para cada valor de cada hiperparâmetro, nas duas buscas (média sobre as demais combinações \emph{da própria busca}; por isso os níveis absolutos das duas curvas não são comparáveis entre si, apenas o formato de cada uma e os pontos em que se sobrepõem). Na busca inicial a variação é pequena em todos os hiperparâmetros: de 0,2\% (número de camadas) a 1,6\% (unidades ocultas). Em ordem decrescente de efeito: mais unidades ocultas ajudam (64 melhor que 16), GRU é ligeiramente melhor que LSTM, a janela de 24 h supera a de 48 h, taxa $10^{-3}$ é melhor que $3\times10^{-4}$ e o dropout não ajudou. A busca ampliada confirma o padrão e mostra onde a melhora termina: depois de 64 unidades o erro volta a subir (128 é pior), a janela de 24 h também supera a de 12 h, a terceira camada piora e a taxa $3\times10^{-3}$ é a pior das três testadas (0,1796 contra 0,1774 para $10^{-3}$), a maior variação da busca ampliada (1,2\%). Nela, a LSTM aparece ligeiramente à frente da GRU, o oposto da busca inicial, o que indica que a diferença entre as células é da ordem do ruído entre sementes. Janelas maiores não melhoraram porque o estado das últimas 24 h, junto com as variáveis de calendário, já contém a informação útil; esse resultado também é coerente com a baixa previsibilidade a 24 h. A conclusão prática é que, neste problema, \textbf{a escolha da topologia importa bem menos que a escolha das variáveis e do horizonte}.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{resultados/figuras/sensibilidade.png}
+\caption{Sensibilidade do MSE de validação aos hiperparâmetros nas buscas inicial (azul) e ampliada (laranja); cada curva é a média das demais combinações da própria busca.}
+\label{fig:sens}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.7\textwidth]{resultados/figuras/perda_vs_parametros.png}
+\caption{MSE de validação de cada configuração da busca inicial contra o número de parâmetros.}
+\label{fig:params}
+\end{figure}
+
+\section{Análises Adicionais}
+
+\subsection{Busca ampliada de hiperparâmetros}\label{sec:ampliada}
+Para verificar se a grade inicial era limitante, fez-se uma segunda busca (\texttt{busca\_ampliada.py}, 64 treinos) com valores novos: janela de 12 h, 64 e 128 unidades, 2 e 3 camadas e taxa $3\times10^{-3}$, sem dropout, 2 sementes cada. \textbf{Nada melhorou}: o melhor resultado novo (GRU, janela de 24 h, 64 unidades, 2 camadas) teve MSE de validação de 0,1759, contra 0,1753 da configuração já escolhida, e modelos de até 336\,000 parâmetros ficaram entre 0,1760 e 0,1830. Em média, a taxa $3\times10^{-3}$ foi pior que $10^{-3}$ (0,1796 contra 0,1774), a janela de 12 h pior que a de 24 h (0,1791 contra 0,1778) e a terceira camada não ajudou. O desempenho estagnou perto de 0,175, o que indica que o limite vem da informação disponível (uma estação) e não da capacidade da rede.
+
+\subsection{Tamanho do conjunto de validação e uso da validação no treino}
+Foi verificado se o tamanho do conjunto de validação impacta nos resultados. O GRU escolhido foi retreinado, com 3 sementes, usando como validação (sempre a partir de 2020, logo após o treino) apenas 1 ano, 2 anos ou os 3 anos (Tabela~\ref{tab:valtam}). O resultado no teste foi \textbf{idêntico} nos três casos: em cada semente, o \emph{early stopping} escolheu a mesma época de parada (17, 17 e 26) com 1, 2 ou 3 anos. O MSE de validação em si muda (0,164, 0,161 e 0,176, pois cada ano é mais ou menos difícil), mas o ponto onde ele deixa de melhorar não. Portanto, neste problema, reduzir a validação para 1 ano é suficiente e daria o mesmo modelo.
+
+Também se treinou o GRU com treino e validação juntos (2012--2022), com um número fixo de épocas (19, a média da melhor época nas 5 sementes finais), sem conjunto de validação. O RMSE no teste caiu de 2,201 para 2,189 $^\circ$C (e o ganho sobre a persistência subiu de 31,2\% para 31,9\%), uma melhora de cerca de um desvio padrão entre sementes: real, porém pequena. Usar os dados mais recentes no treino final é vantajoso e barato, mas só deve ser feito depois de fixados os hiperparâmetros e o número de épocas.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{GRU escolhido, 3 sementes (média $\pm$ desvio); treino em 2012--2019, exceto na última linha.}
+\label{tab:valtam}
+\begin{tabularx}{\textwidth}{Xcccc}
+\toprule
+\textbf{Validação (\emph{early stopping})} & \textbf{Épocas} & \textbf{RMSE ($^\circ$C)} & \textbf{MAE ($^\circ$C)} & \textbf{Ganho} \\
+\midrule
+1 ano (2020) & 17, 17, 26 & 2,201 $\pm$ 0,012 & 1,629 & 31,2\% \\
+2 anos (2020--2021) & 17, 17, 26 & 2,201 $\pm$ 0,012 & 1,629 & 31,2\% \\
+3 anos (2020--2022) & 17, 17, 26 & 2,201 $\pm$ 0,012 & 1,629 & 31,2\% \\
+Treino + validação (2012--2022) & 19 (fixas) & 2,189 $\pm$ 0,009 & 1,621 & 31,9\% \\
+\bottomrule
+\end{tabularx}
+\smallskip
+
+\footnotesize Épocas: uma por semente. RMSE e MAE no teste. Ganho: MSE sobre a persistência.
+\end{table}
+
+\subsection{O erro cresce com a distância ao treino?}
+O teste começa 3 anos após o fim do treino e termina 6 anos depois. O RMSE do GRU por ano de teste foi de 2,27 $^\circ$C em 2023, 2,08 $^\circ$C em 2024 e 2,20 $^\circ$C em 2025, e o da persistência, 2,68, 2,44 e 2,74 $^\circ$C. Não há degradação com o tempo; as diferenças entre anos acompanham a dificuldade de cada ano, que afeta igualmente a persistência. Não há, portanto, evidência de deriva de distribuição (por exemplo, de mudança climática ou de calibração do sensor) no período.
+
+\section{Discussão e Lições Aprendidas}
+\begin{itemize}
+    \item \textbf{Mais capacidade ou mais ajuste não ajudaram.} A busca ampliada (modelos de até 336\,000 parâmetros), a paciência maior e o tamanho da validação não mudaram o resultado; o que melhorou o erro foi usar mais dados no treino final (Seção~\ref{sec:ampliada}) e, antes de tudo, escolher entradas e baselines adequados.
+    \item \textbf{Cuidados com séries temporais:} partição cronológica, ajuste da padronização só no treino, descarte de janelas que cruzam falhas e de amostras que atravessam a fronteira entre conjuntos.
+    \item \textbf{Limitações.} A estação isolada não vê a atmosfera ao redor; dados de várias estações ou de satélite provavelmente reduziriam o erro. O teste cobre apenas três anos e uma localidade. 
+\end{itemize}
+
+\end{document}
